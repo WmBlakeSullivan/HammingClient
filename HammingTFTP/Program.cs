@@ -20,13 +20,14 @@ namespace HammingTFTP
 
         static ArrayList fileBytes = new ArrayList();
 
+        static int innerNulls = 0;
+
         static void Main(string[] args)
         {
             //test for correct number of arguments
             if (args.Length != 3)
             {
                 Console.WriteLine("Usage: HammingTFTP.exe [error|noerror] tftp-host file");
-                Console.ReadKey();
                 Environment.Exit(1);
             }
 
@@ -44,7 +45,6 @@ namespace HammingTFTP
             {
                 Console.WriteLine("Usage: HammingTFTP.exe [error|noerror] "
                     + "tftp-host file");
-                Console.ReadKey();
                 Environment.Exit(1);
             }
 
@@ -115,10 +115,11 @@ namespace HammingTFTP
                                     if(response[2] == blockNumber[0] && response[3] == blockNumber[1])
                                     {
                                         byte[] data = new byte[response.Length - 4];
+                                        Console.WriteLine("Block number: " + Convert.ToString(response[2]).PadLeft(8, '0') +" "+ Convert.ToString(response[3]).PadLeft(8, '0')+"\n\n");
                                         Buffer.BlockCopy(response, 4, data, 0, response.Length - 4);
                                         if (VerifyData(data))
                                         {
-                                            if (response.Length < 516 || response[response.Length-1] == 0x00)
+                                            if (response.Length < 516 /*&& response[response.Length - 1] == 0x00*/)
                                                 run = false;
                                             message = new byte[4] { ACK[0], ACK[1], blockNumber[0], blockNumber[1] };
                                             client.Send(message, message.Length);
@@ -159,7 +160,6 @@ namespace HammingTFTP
                         if(consecTimeouts >= 6)
                         {
                             Console.WriteLine("Connection to the server has timed out. Exiting program.");
-                            Console.ReadKey();
                             Environment.Exit(1);
                         }
                         else
@@ -174,7 +174,6 @@ namespace HammingTFTP
             catch (Exception e)
             {
                 Console.WriteLine("The program has encountered a fatal error during file read. Exiting.");
-                Console.ReadKey();
                 Environment.Exit(2);
             }
             try
@@ -190,141 +189,148 @@ namespace HammingTFTP
             catch (Exception e)
             {
                 Console.WriteLine("The program has encountered a fatal error during file write. Exiting.");
-                Console.ReadKey();
                 Environment.Exit(3);
             }
             Console.WriteLine("Transfer Complete.");
-            Console.ReadKey();
         }
 
         private static bool VerifyData(byte[] data)
         {
             bool goodData = true;
             bool[] leftoverBits = new bool[0];
-            for(int i = 0; i <= data.Length / 16 && goodData; i++)
+            for(int i = 0; i < data.Length / 4 && goodData; i++)
             {
-                for (int j = 0; j < 4 && (i*4+j) < data.Length && goodData; j++)
+                byte[] chunkBytes = new byte[4];
+                for(int k = 3; k >= 0 && (i*4+k) < data.Length; k--)
                 {
-                    byte[] chunkBytes = new byte[4];
-                    for(int k = 3; k >= 0 && ((i*4+j)*4+k) < data.Length; k--)
+                    Buffer.BlockCopy(data, (i * 4 + k), chunkBytes, 3 - k, 1);
+                }
+                foreach(byte b in chunkBytes)
+                {
+                    Console.Write(Convert.ToString(b, 2).PadLeft(8, '0') + "\t");
+                }
+                Console.WriteLine();
+                BitArray chunk = new BitArray(chunkBytes);
+                for (int k = 0; k < chunkBytes.Length; k++)
+                {
+                    for (int l = 0; l < 4; l++)
                     {
-                        Buffer.BlockCopy(data, ((i * 4 + j) * 4 + k), chunkBytes, 3 - k, 1);
+                        bool temp = chunk.Get(k * 8 + l);
+                        chunk.Set(k * 8 + l, chunk.Get(k * 8 + (7 - l)));
+                        chunk.Set(k * 8 + (7 - l), temp);
                     }
-                    foreach(byte b in chunkBytes)
+                    for (int l = 0; l < 8; l++)
                     {
-                        Console.Write(Convert.ToString(b, 2).PadLeft(8, '0') + "\t");
+                        char bit = (chunk.Get(k * 8 + l)) ? '1' : '0';
+                        Console.Write(bit);
                     }
-                    Console.WriteLine();
-                    BitArray chunk = new BitArray(chunkBytes);
-                    for (int k = 0; k < chunkBytes.Length; k++)
-                    {
-                        for (int l = 0; l < 4; l++)
-                        {
-                            bool temp = chunk.Get(k * 8 + l);
-                            chunk.Set(k * 8 + l, chunk.Get(k * 8 + (7 - l)));
-                            chunk.Set(k * 8 + (7 - l), temp);
-                        }
-                        for (int l = 0; l < 8; l++)
-                        {
-                            char bit = (chunk.Get(k * 8 + l)) ? '1' : '0';
-                            Console.Write(bit);
-                        }
+                    Console.Write("\t");
+                }
+                Console.WriteLine();
+                int bitToFlip = 0;
+                for(double k = 0; k < 5; k++)
+                {
+                    int parityBit = (int)Math.Pow(2, k);
+                    bitToFlip += verifyHammingParity(chunk, parityBit) ? 0 : parityBit;
+                }
+                if (bitToFlip != 0)
+                {
+                    chunk.Set(chunkBytes.Length * 8 - bitToFlip, !chunk.Get(chunkBytes.Length * 8 - bitToFlip));
+                }
+                int overallParity = 0;
+                for(int k = 0; k < chunk.Length; k++)
+                {
+                    overallParity += (chunk.Get(k)) ? 1 : 0;
+                }
+                if (overallParity % 2 != 0)
+                {
+                    goodData = false;
+                    break;
+                }
+                BitArray flipBits = new BitArray(leftoverBits.Length + 26);
+                for(int k = 0; k < leftoverBits.Length; k++)
+                {
+                    flipBits.Set(k, leftoverBits[leftoverBits.Length - 1 - k]);
+                }
+                for (int k = 0, l = 30; k < 26; k++, l--)
+                {
+                    if (l == 15 || l == 7 || l == 3)
+                        l--;
+                    flipBits.Set(k + leftoverBits.Length, chunk.Get(31-l));
+                }
+                int byteCounter = -1;
+                for (int k = 0; k < flipBits.Length; k++)
+                {
+                    char bit = flipBits.Get(k) ? '1' : '0';
+                    Console.Write(bit);
+                    byteCounter = (byteCounter + 1) % 8;
+                    if(byteCounter == 7)
                         Console.Write("\t");
-                    }
-                    Console.WriteLine();
-                    int bitToFlip = 0;
-                    for(double k = 0; k < 5; k++)
+                }
+                Console.WriteLine();
+                int flipIterations = flipBits.Length / 8;
+                if (flipBits.Length % 8 != 0) flipIterations++;
+                for (int k = 0; k < flipIterations; k++)
+                {
+                    int swaps;
+                    if(flipBits.Length - (k*8 + 8) >= 0)
                     {
-                        int parityBit = (int)Math.Pow(2, k);
-                        bitToFlip += verifyHammingParity(chunk, parityBit) ? 0 : parityBit;
+                        swaps = 4;
                     }
-                    if (bitToFlip != 0)
+                    else
                     {
-                        chunk.Set(chunkBytes.Length * 8 - bitToFlip, !chunk.Get(chunkBytes.Length * 8 - bitToFlip));
+                        swaps = (flipBits.Length - (k * 8)) / 2;
                     }
-                    int overallParity = 0;
-                    for(int k = 0; k < chunk.Length; k++)
+                    for (int l = 0; l < swaps; l++)
                     {
-                        overallParity += (chunk.Get(k)) ? 1 : 0;
+                        bool temp = flipBits.Get(k * 8 + l);
+                        flipBits.Set(k * 8 + l, flipBits.Get(k * 8 + (2*swaps - 1 - l)));
+                        flipBits.Set(k * 8 + (2*swaps - 1 - l), temp);
                     }
-                    if (overallParity % 2 != 0)
+                }
+                byteCounter = -1;
+                for (int k = 0; k < flipBits.Length; k++)
+                {
+                    char bit = flipBits.Get(k) ? '1' : '0';
+                    Console.Write(bit);
+                    byteCounter = (byteCounter + 1) % 8;
+                    if (byteCounter == 7)
+                        Console.Write("\t");
+                }
+                Console.WriteLine();
+                int byteIterations = flipBits.Length / 8;
+                for (int k = 0; k < byteIterations; k++)
+                {
+                    BitArray buildByte = new BitArray(8);
+                    for(int l = 0; l < 8; l++)
                     {
-                        goodData = false;
-                        break;
+                        buildByte.Set(l, flipBits.Get((k * 8) + l));
                     }
-                    BitArray flipBits = new BitArray(leftoverBits.Length + 26);
-                    for(int k = 0; k < leftoverBits.Length; k++)
+                    byte fileByte = ConvertToByte(buildByte);
+                    if(fileByte != 0x00)
                     {
-                        flipBits.Set(k, leftoverBits[leftoverBits.Length - 1 - k]);
-                    }
-                    for (int k = 0, l = 30; k < 26; k++, l--)
-                    {
-                        if (l == 15 || l == 7 || l == 3)
-                            l--;
-                        flipBits.Set(k + leftoverBits.Length, chunk.Get(31-l));
-                    }
-                    int byteCounter = -1;
-                    for (int k = 0; k < flipBits.Length; k++)
-                    {
-                        char bit = flipBits.Get(k) ? '1' : '0';
-                        Console.Write(bit);
-                        byteCounter = (byteCounter + 1) % 8;
-                        if(byteCounter == 7)
-                            Console.Write("\t");
-                    }
-                    Console.WriteLine();
-                    int flipIterations = flipBits.Length / 8;
-                    if (flipBits.Length % 8 != 0) flipIterations++;
-                    for (int k = 0; k < flipIterations; k++)
-                    {
-                        int swaps;
-                        if(flipBits.Length - (k*8 + 8) >= 0)
+                        for(int l = 0; l < innerNulls; l++)
                         {
-                            swaps = 4;
+                            fileBytes.Add(ConvertToByte(new BitArray(8)));
                         }
-                        else
-                        {
-                            swaps = (flipBits.Length - (k * 8)) / 2;
-                        }
-                        for (int l = 0; l < swaps; l++)
-                        {
-                            bool temp = flipBits.Get(k * 8 + l);
-                            flipBits.Set(k * 8 + l, flipBits.Get(k * 8 + (2*swaps - 1 - l)));
-                            flipBits.Set(k * 8 + (2*swaps - 1 - l), temp);
-                        }
-                    }
-                    byteCounter = -1;
-                    for (int k = 0; k < flipBits.Length; k++)
-                    {
-                        char bit = flipBits.Get(k) ? '1' : '0';
-                        Console.Write(bit);
-                        byteCounter = (byteCounter + 1) % 8;
-                        if (byteCounter == 7)
-                            Console.Write("\t");
-                    }
-                    Console.WriteLine();
-                    int byteIterations = flipBits.Length / 8;
-                    for (int k = 0; k < byteIterations; k++)
-                    {
-                        BitArray buildByte = new BitArray(8);
-                        for(int l = 0; l < 8; l++)
-                        {
-                            buildByte.Set(l, flipBits.Get((k * 8) + l));
-                        }
-                        byte fileByte = ConvertToByte(buildByte);
+                        innerNulls = 0;
                         Console.Write(Convert.ToString(fileByte, 2).PadLeft(8, '0') + "\t");
                         fileBytes.Add(fileByte);
                     }
-                    int leftovers = flipBits.Length % 8;
-                    leftoverBits = new bool[leftovers];
-                    for(int k = 0; k < leftovers; k++)
+                    else
                     {
-                        leftoverBits[k] = flipBits.Get(byteIterations * 8 + k);
-                        char bit = leftoverBits[k] ? '1' : '0';
-                        Console.Write(bit);
+                        innerNulls++;
                     }
-                    Console.WriteLine("\n");
                 }
+                int leftovers = flipBits.Length % 8;
+                leftoverBits = new bool[leftovers];
+                for(int k = 0; k < leftovers; k++)
+                {
+                    leftoverBits[k] = flipBits.Get(byteIterations * 8 + k);
+                    char bit = leftoverBits[k] ? '1' : '0';
+                    Console.Write(bit);
+                }
+                Console.WriteLine("\n");
             }
 
             return goodData;
