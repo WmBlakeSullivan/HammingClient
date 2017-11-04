@@ -5,7 +5,10 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
-
+/*
+ * Name:    Program.cs
+ * Author:  Wm. Blake Sullivan
+ */
 namespace HammingTFTP
 {
     class Program
@@ -104,6 +107,7 @@ namespace HammingTFTP
                         byte[] opcode = new byte[2] { response[0], response[1] };
                         if(opcode[0] != 0x00)
                         {
+                            //improper opcode
                             message = new byte[4] { NACK[0], NACK[1], blockNumber[0], blockNumber[1] };
                             client.Send(message, message.Length);
                         }
@@ -111,6 +115,7 @@ namespace HammingTFTP
                         {
                             switch (opcode[1])
                             {
+                                //data block
                                 case 0x03:
                                     if(response[2] == blockNumber[0] && response[3] == blockNumber[1])
                                     {
@@ -119,7 +124,7 @@ namespace HammingTFTP
                                         Buffer.BlockCopy(response, 4, data, 0, response.Length - 4);
                                         if (VerifyData(data))
                                         {
-                                            if (response.Length < 516 /*&& response[response.Length - 1] == 0x00*/)
+                                            if (response.Length < 516)
                                                 run = false;
                                             message = new byte[4] { ACK[0], ACK[1], blockNumber[0], blockNumber[1] };
                                             client.Send(message, message.Length);
@@ -137,6 +142,8 @@ namespace HammingTFTP
                                         client.Send(message, message.Length);
                                     }
                                     break;
+
+                                //error block
                                 case 0x05:
                                     byte[] errorCode = new byte[2] { response[2], response[3] };
                                     byte[] errorMessage = new byte[response.Length - 5];
@@ -147,6 +154,8 @@ namespace HammingTFTP
                                     Console.WriteLine(Encoding.ASCII.GetString(errorCode)+": "+Encoding.ASCII.GetString(errorMessage));
                                     Environment.Exit(1);
                                     break;
+
+                                //unknown block
                                 default:
                                     message = new byte[4] { NACK[0], NACK[1], blockNumber[0], blockNumber[1] };
                                     client.Send(message, message.Length);
@@ -194,22 +203,26 @@ namespace HammingTFTP
             Console.WriteLine("Transfer Complete.");
         }
 
+        /**
+         * Name:    VerifyData
+         * Description: Verifies the validity of the raw data and extracts the file data after verification
+         * Params:  The data block to be verified
+         * Returns: True if the block of data was successfully converted, false otherwise
+         */
         private static bool VerifyData(byte[] data)
         {
             bool goodData = true;
             bool[] leftoverBits = new bool[0];
             for(int i = 0; i < data.Length / 4 && goodData; i++)
             {
+                //grab the current 4 bytes
                 byte[] chunkBytes = new byte[4];
                 for(int k = 3; k >= 0 && (i*4+k) < data.Length; k--)
                 {
                     Buffer.BlockCopy(data, (i * 4 + k), chunkBytes, 3 - k, 1);
                 }
-                foreach(byte b in chunkBytes)
-                {
-                    Console.Write(Convert.ToString(b, 2).PadLeft(8, '0') + "\t");
-                }
-                Console.WriteLine();
+
+                //put the current 4 bytes into a 32 bit BitArray
                 BitArray chunk = new BitArray(chunkBytes);
                 for (int k = 0; k < chunkBytes.Length; k++)
                 {
@@ -219,24 +232,23 @@ namespace HammingTFTP
                         chunk.Set(k * 8 + l, chunk.Get(k * 8 + (7 - l)));
                         chunk.Set(k * 8 + (7 - l), temp);
                     }
-                    for (int l = 0; l < 8; l++)
-                    {
-                        char bit = (chunk.Get(k * 8 + l)) ? '1' : '0';
-                        Console.Write(bit);
-                    }
-                    Console.Write("\t");
                 }
-                Console.WriteLine();
+
+                //verify Hamming parity for the BitArray
                 int bitToFlip = 0;
                 for(double k = 0; k < 5; k++)
                 {
                     int parityBit = (int)Math.Pow(2, k);
-                    bitToFlip += verifyHammingParity(chunk, parityBit) ? 0 : parityBit;
+                    bitToFlip += VerifyHammingParity(chunk, parityBit) ? 0 : parityBit;
                 }
+
+                //if invalid parity, attempt to correct
                 if (bitToFlip != 0)
                 {
                     chunk.Set(chunkBytes.Length * 8 - bitToFlip, !chunk.Get(chunkBytes.Length * 8 - bitToFlip));
                 }
+
+                //verify overall parity
                 int overallParity = 0;
                 for(int k = 0; k < chunk.Length; k++)
                 {
@@ -247,6 +259,8 @@ namespace HammingTFTP
                     goodData = false;
                     break;
                 }
+
+                //create the stripped BitArray
                 BitArray flipBits = new BitArray(leftoverBits.Length + 26);
                 for(int k = 0; k < leftoverBits.Length; k++)
                 {
@@ -258,16 +272,8 @@ namespace HammingTFTP
                         l--;
                     flipBits.Set(k + leftoverBits.Length, chunk.Get(31-l));
                 }
-                int byteCounter = -1;
-                for (int k = 0; k < flipBits.Length; k++)
-                {
-                    char bit = flipBits.Get(k) ? '1' : '0';
-                    Console.Write(bit);
-                    byteCounter = (byteCounter + 1) % 8;
-                    if(byteCounter == 7)
-                        Console.Write("\t");
-                }
-                Console.WriteLine();
+
+                //flip bits
                 int flipIterations = flipBits.Length / 8;
                 if (flipBits.Length % 8 != 0) flipIterations++;
                 for (int k = 0; k < flipIterations; k++)
@@ -288,16 +294,8 @@ namespace HammingTFTP
                         flipBits.Set(k * 8 + (2*swaps - 1 - l), temp);
                     }
                 }
-                byteCounter = -1;
-                for (int k = 0; k < flipBits.Length; k++)
-                {
-                    char bit = flipBits.Get(k) ? '1' : '0';
-                    Console.Write(bit);
-                    byteCounter = (byteCounter + 1) % 8;
-                    if (byteCounter == 7)
-                        Console.Write("\t");
-                }
-                Console.WriteLine();
+
+                //build bytes
                 int byteIterations = flipBits.Length / 8;
                 for (int k = 0; k < byteIterations; k++)
                 {
@@ -314,7 +312,6 @@ namespace HammingTFTP
                             fileBytes.Add(ConvertToByte(new BitArray(8)));
                         }
                         innerNulls = 0;
-                        Console.Write(Convert.ToString(fileByte, 2).PadLeft(8, '0') + "\t");
                         fileBytes.Add(fileByte);
                     }
                     else
@@ -327,16 +324,19 @@ namespace HammingTFTP
                 for(int k = 0; k < leftovers; k++)
                 {
                     leftoverBits[k] = flipBits.Get(byteIterations * 8 + k);
-                    char bit = leftoverBits[k] ? '1' : '0';
-                    Console.Write(bit);
                 }
-                Console.WriteLine("\n");
             }
 
             return goodData;
         }
 
-        private static bool verifyHammingParity(BitArray chunk, int parityBit)
+        /**
+         * Name:    VerifyHammingParity
+         * Description: Checks the specified parity bit in a chunk
+         * Params: The chunk of data to verify and the parity bit to verify on
+         * Returns: True if even parity on the specified bit, false otherwise
+         */
+        private static bool VerifyHammingParity(BitArray chunk, int parityBit)
         {
 
             int parityCounter = 0;
@@ -354,6 +354,12 @@ namespace HammingTFTP
             return parityCounter % 2 == 0;
         }
 
+        /**
+         * Name:    ConvertToByte
+         * Description: Converts a BitArray of length 8 into a byte
+         * Params:  The BitArray to be converted
+         * Returns: A byte representation fo the BitArray
+         */
         private static byte ConvertToByte(BitArray bits)
         {
             BitArray bitsFlipped = new BitArray(bits);
@@ -369,6 +375,12 @@ namespace HammingTFTP
 
         }
 
+        /**
+         * Name:    Increment
+         * Description: Increments the block counter
+         * Params:  The original block counter byte[]
+         * Returns: The incremented block counter byte[]
+         */
         private static byte[] Increment(byte[] ba)
         {
             byte[] rv = ba;
